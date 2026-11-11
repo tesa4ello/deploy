@@ -136,21 +136,21 @@ echo -e
 echo -e "$LINECOLOR${chars:0:$half}$TEXTCOLOR${str}$LINECOLOR${chars:0:$rest}$DEF"
 echo -e
 # echo -e "
-$3$1$2$DEF
-"
+# $3$1$2$DEF
+# "
 # align_central "
-$3$1$2|=-$DEF
-"
+# $3$1$2|=-$DEF
+# "
 }
 echo -e ${LCYAN}
 figlet -ct "Welcome to `cat /etc/hostname`"
 fastfetch
 header "Место на разделах"
 df -h | awk 'FNR<2||/^(\/dev)/'
-ERRORS=$(dmesg | grep error | grep -v errors)
-if [ -n "$ERRORS" ]; then
+ERRORS=dmesg | grep error | grep -v errors
+if [ $ERRORS ]; then
 header "Последние ошибки"
-echo "$ERRORS"
+echo $ERRORS
 return 0
 fi
 alias ll='ls -lha --color=auto'
@@ -158,27 +158,24 @@ header "Удачного дня!"
 BASHRC_EOF
 ok "bash.bashrc установлен"
 
-# --- 3. Обновление системы + безопасная чистка ядер ---
+# --- 3. Обновление системы ---
 info "Обновление пакетов"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
-apt-get dist-upgrade -y
-
-# Используем только штатный autoremove (безопасно)
+apt-get full-upgrade -y
 apt-get autoremove --purge -y
 apt-get autoclean -y
-
 ok "Система обновлена"
 
 # --- 4. Базовые пакеты ---
 info "Установка базовых пакетов"
-apt-get install -y curl wget sudo ufw btop figlet iptables
+apt-get install -y curl wget sudo ufw btop figlet
 ok "Пакеты установлены"
 
 # --- 5. fastfetch или neofetch ---
 info "Установка fastfetch"
-if apt-get install -y fastfetch; then
+if apt-get install -y fastfetch 2>/dev/null; then
     ok "fastfetch установлен"
 else
     warn "fastfetch недоступен, ставлю neofetch"
@@ -188,7 +185,7 @@ fi
 # --- 6. Настройка UFW ---
 info "Настройка UFW"
 
-# Автопереключение на iptables-legacy (нужно для OpenVZ/LXC/некоторых VPS)
+# Автопереключение на iptables-legacy (нужно для OpenVZ/LXC)
 if command -v iptables-legacy &>/dev/null; then
     update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || true
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
@@ -196,21 +193,15 @@ fi
 
 # Проверяем, работает ли iptables
 if ! iptables -L -n &>/dev/null; then
-    warn "iptables не поддерживается хостовым ядром или VPS."
-    warn "UFW работать не будет — пропускаем."
+    warn "iptables не поддерживается хостовым ядром. Пропускаем UFW."
     SKIP_UFW=1
 fi
 
 if [[ -z "${SKIP_UFW:-}" ]]; then
-    # Порт SSH определяем автоматически из текущего подключения
-    SSH_PORT=$(echo "${SSH_CONNECTION:-}" | awk '{print $4}')
-    SSH_PORT=${SSH_PORT:-22}
-    info "Порт SSH: $SSH_PORT"
-
     read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS < /dev/tty
 
     if [[ -z "$ALLOW_IPS" ]]; then
-        warn "Белый список пуст. SSH будет заблокирован полностью после включения UFW."
+        warn "Белый список пуст. После включения UFW весь входящий трафик будет заблокирован."
         read -rp "Всё равно включить UFW? [y/N]: " CONFIRM < /dev/tty
         [[ ${CONFIRM,,} == y ]] || SKIP_UFW=1
     fi
@@ -218,8 +209,8 @@ if [[ -z "${SKIP_UFW:-}" ]]; then
     if [[ -z "${SKIP_UFW:-}" ]]; then
         for ip in $ALLOW_IPS; do
             if [[ $ip =~ ^[0-9./]+$ ]]; then
-                ufw allow from "$ip" to any port "$SSH_PORT" proto tcp comment "SSH from $ip"
-                ok "SSH разрешён с $ip"
+                ufw allow from "$ip" comment "whitelist $ip"
+                ok "Полный доступ разрешён с $ip"
             else
                 warn "Пропущен некорректный адрес: $ip"
             fi
