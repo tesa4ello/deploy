@@ -11,6 +11,14 @@ err()   { echo -e "${RED}[ERR ]${DEF} $*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || err "Запускайте от root"
 
+# --- 0. Установка hostname ---
+read -rp "Hostname для сервера: " NEW_HOSTNAME < /dev/tty
+[[ -n "$NEW_HOSTNAME" ]] || err "Hostname не может быть пустым"
+hostnamectl set-hostname "$NEW_HOSTNAME"
+echo "$NEW_HOSTNAME" > /etc/hostname
+sed -i "s/127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts 2>/dev/null || true
+ok "Hostname установлен: $NEW_HOSTNAME"
+
 # --- 1. Очистка старых bashrc ---
 info "Удаляю /root/.bashrc и /etc/skel/.bashrc"
 rm -f /root/.bashrc /etc/skel/.bashrc
@@ -132,11 +140,11 @@ fi
 
 # --- 6. Настройка UFW ---
 info "Настройка UFW"
-read -rp "Порт SSH [22]: " SSH_PORT
+read -rp "Порт SSH [22]: " SSH_PORT < /dev/tty
 SSH_PORT=${SSH_PORT:-22}
 ufw allow "$SSH_PORT"/tcp comment 'SSH'
 
-read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS
+read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS < /dev/tty
 for ip in $ALLOW_IPS; do
     if [[ $ip =~ ^[0-9./]+$ ]]; then
         ufw allow from "$ip" comment "whitelist $ip"
@@ -146,16 +154,16 @@ for ip in $ALLOW_IPS; do
     fi
 done
 
-read -rp "Открыть HTTP (80)? [y/N]: " OPEN_HTTP
+read -rp "Открыть HTTP (80)? [y/N]: " OPEN_HTTP < /dev/tty
 [[ ${OPEN_HTTP,,} == y ]] && ufw allow 80/tcp comment 'HTTP'
 
-read -rp "Открыть HTTPS (443)? [y/N]: " OPEN_HTTPS
+read -rp "Открыть HTTPS (443)? [y/N]: " OPEN_HTTPS < /dev/tty
 [[ ${OPEN_HTTPS,,} == y ]] && ufw allow 443/tcp comment 'HTTPS'
 
 if [[ -z "$ALLOW_IPS" && "$SSH_PORT" != "22" ]]; then
     warn "Вы не указали IP для whitelist и сменили порт SSH."
     warn "Убедитесь, что сможете подключиться после включения firewall."
-    read -rp "Продолжить и включить UFW? [y/N]: " CONFIRM
+    read -rp "Продолжить и включить UFW? [y/N]: " CONFIRM < /dev/tty
     [[ ${CONFIRM,,} == y ]] || SKIP_UFW=1
 fi
 
@@ -166,7 +174,7 @@ if [[ -z "${SKIP_UFW:-}" ]]; then
 fi
 
 # --- 7. Создание пользователя ---
-read -rp "Имя нового пользователя: " NEWUSER
+read -rp "Имя нового пользователя: " NEWUSER < /dev/tty
 [[ -n "$NEWUSER" ]] || err "Имя не может быть пустым"
 id "$NEWUSER" &>/dev/null && err "Пользователь $NEWUSER уже существует"
 
