@@ -14,10 +14,16 @@ err()   { echo -e "${RED}[ERR ]${DEF} $*" >&2; exit 1; }
 # --- 0. Установка hostname ---
 read -rp "Hostname для сервера: " NEW_HOSTNAME < /dev/tty
 [[ -n "$NEW_HOSTNAME" ]] || err "Hostname не может быть пустым"
-hostnamectl set-hostname "$NEW_HOSTNAME"
-echo "$NEW_HOSTNAME" > /etc/hostname
-sed -i "s/127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts 2>/dev/null || true
-ok "Hostname установлен: $NEW_HOSTNAME"
+if [[ "$(hostname)" == "$NEW_HOSTNAME" ]]; then
+    info "Hostname уже установлен: $NEW_HOSTNAME"
+else
+    hostnamectl set-hostname "$NEW_HOSTNAME"
+    echo "$NEW_HOSTNAME" > /etc/hostname
+    # Обновляем hosts: удаляем старую запись для 127.0.1.1 и добавляем новую
+    sed -i '/^127\.0\.1\.1/d' /etc/hosts
+    echo "127.0.1.1	$NEW_HOSTNAME" >> /etc/hosts
+    ok "Hostname установлен: $NEW_HOSTNAME"
+fi
 
 # --- 1. Очистка старых bashrc ---
 info "Удаляю /root/.bashrc и /etc/skel/.bashrc"
@@ -135,22 +141,16 @@ local rest=$(( ${#chars} - ${#str} - $half ))
 echo -e
 echo -e "$LINECOLOR${chars:0:$half}$TEXTCOLOR${str}$LINECOLOR${chars:0:$rest}$DEF"
 echo -e
-# echo -e "
-# $3$1$2$DEF
-# "
-# align_central "
-# $3$1$2|=-$DEF
-# "
 }
 echo -e ${LCYAN}
 figlet -ct "Welcome to `cat /etc/hostname`"
 fastfetch
 header "Место на разделах"
 df -h | awk 'FNR<2||/^(\/dev)/'
-ERRORS=dmesg | grep error | grep -v errors
-if [ $ERRORS ]; then
+ERRORS=$(dmesg | grep error | grep -v errors)
+if [ -n "$ERRORS" ]; then
 header "Последние ошибки"
-echo $ERRORS
+echo "$ERRORS"
 return 0
 fi
 alias ll='ls -lha --color=auto'
@@ -232,11 +232,14 @@ fi
 # --- 7. Создание пользователя ---
 read -rp "Имя нового пользователя: " NEWUSER < /dev/tty
 [[ -n "$NEWUSER" ]] || err "Имя не может быть пустым"
-id "$NEWUSER" &>/dev/null && err "Пользователь $NEWUSER уже существует"
 
-adduser --gecos "" "$NEWUSER"
-usermod -aG sudo "$NEWUSER"
-ok "Пользователь $NEWUSER создан и добавлен в sudo"
+if id "$NEWUSER" &>/dev/null; then
+    warn "Пользователь $NEWUSER уже существует — пропускаю создание"
+else
+    adduser --gecos "" "$NEWUSER"
+    usermod -aG sudo "$NEWUSER"
+    ok "Пользователь $NEWUSER создан и добавлен в sudo"
+fi
 
 # --- 8. Смена пароля root ---
 info "Смена пароля root"
@@ -246,14 +249,32 @@ passwd root
 if [[ -d /root/.ssh && -f /root/.ssh/authorized_keys ]]; then
     info "Переношу SSH-ключи в ~$NEWUSER/.ssh"
     mkdir -p "/home/$NEWUSER/.ssh"
-    cp /root/.ssh/authorized_keys "/home/$NEWUSER/.ssh/"
+    
+    # Не перезаписываем, если у пользователя уже есть ключи
+    if [[ -f "/home/$NEWUSER/.ssh/authorized_keys" ]]; then
+        warn "authorized_keys уже существует у $NEWUSER — пропускаю"
+    else
+        cp /root/.ssh/authorized_keys "/home/$NEWUSER/.ssh/"
+        ok "authorized_keys скопирован"
+    fi
+    
+    # Копируем приватные ключи только если их нет
     for k in /root/.ssh/id_*; do
-        [[ -e "$k" && "$k" != *.pub ]] && cp "$k" "/home/$NEWUSER/.ssh/"
+        if [[ -e "$k" && "$k" != *.pub ]]; then
+            keyname=$(basename "$k")
+            if [[ ! -f "/home/$NEWUSER/.ssh/$keyname" ]]; then
+                cp "$k" "/home/$NEWUSER/.ssh/"
+                ok "Приватный ключ $keyname скопирован"
+            else
+                warn "Ключ $keyname уже есть у $NEWUSER — пропускаю"
+            fi
+        fi
     done
+    
     chown -R "$NEWUSER:$NEWUSER" "/home/$NEWUSER/.ssh"
     chmod 700 "/home/$NEWUSER/.ssh"
     chmod 600 "/home/$NEWUSER/.ssh"/* 2>/dev/null || true
-    ok "Ключи перенесены"
+    ok "Права на SSH-ключи установлены"
 else
     warn "Ключей у root не найдено — пропуск"
 fi
