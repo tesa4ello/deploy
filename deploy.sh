@@ -135,6 +135,12 @@ local rest=$(( ${#chars} - ${#str} - $half ))
 echo -e
 echo -e "$LINECOLOR${chars:0:$half}$TEXTCOLOR${str}$LINECOLOR${chars:0:$rest}$DEF"
 echo -e
+# echo -e "
+$3$1$2$DEF
+"
+# align_central "
+$3$1$2|=-$DEF
+"
 }
 echo -e ${LCYAN}
 figlet -ct "Welcome to `cat /etc/hostname`"
@@ -190,58 +196,53 @@ info "Настройка UFW"
 
 # Автопереключение на iptables-legacy (нужно для OpenVZ/LXC)
 if command -v iptables-legacy &>/dev/null; then
-    info "Переключаю iptables на legacy-режим (совместимость с VPS)"
     update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || true
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
 fi
 
-# Функция безопасного чтения порта
-read_port() {
-    local val
-    while true; do
-        read -rp "Порт SSH [22]: " val < /dev/tty
-        val="${val//[[:space:]]/}"
-        val="${val:-22}"
-        if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 65535 )); then
-            echo "$val"
-            return
-        fi
-        warn "Некорректный порт '$val'. Введите число от 1 до 65535."
-    done
-}
-
-SSH_PORT=$(read_port)
-info "Использую порт SSH: $SSH_PORT"
-ufw allow "$SSH_PORT"/tcp comment 'SSH' || err "Не удалось добавить правило для порта $SSH_PORT"
-
-read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS < /dev/tty
-for ip in $ALLOW_IPS; do
-    if [[ $ip =~ ^[0-9./]+$ ]]; then
-        ufw allow from "$ip" comment "whitelist $ip"
-        ok "Добавлен whitelist: $ip"
-    else
-        warn "Пропущен некорректный адрес: $ip"
-    fi
-done
-
-read -rp "Открыть HTTP (80)? [y/N]: " OPEN_HTTP < /dev/tty
-[[ ${OPEN_HTTP,,} == y ]] && ufw allow 80/tcp comment 'HTTP'
-
-read -rp "Открыть HTTPS (443)? [y/N]: " OPEN_HTTPS < /dev/tty
-[[ ${OPEN_HTTPS,,} == y ]] && ufw allow 443/tcp comment 'HTTPS'
-
-if [[ -z "$ALLOW_IPS" && "$SSH_PORT" != "22" ]]; then
-    warn "Вы не указали IP для whitelist и сменили порт SSH."
-    warn "Убедитесь, что сможете подключиться после включения firewall."
-    read -rp "Продолжить и включить UFW? [y/N]: " CONFIRM < /dev/tty
-    [[ ${CONFIRM,,} == y ]] || SKIP_UFW=1
+# Проверяем, работает ли iptables
+if ! iptables -L -n &>/dev/null; then
+    warn "iptables не поддерживается хостовым ядром (OpenVZ/LXC)."
+    warn "UFW работать не будет — пропускаем."
+    SKIP_UFW=1
 fi
 
 if [[ -z "${SKIP_UFW:-}" ]]; then
-    ufw disable 2>/dev/null || true
-    ufw --force enable
-    ufw status verbose
-    ok "UFW включён"
+    # Порт SSH определяем автоматически из текущего подключения
+    # SSH_CONNECTION = "client_ip client_port server_ip server_port"
+    SSH_PORT=$(echo "${SSH_CONNECTION:-}" | awk '{print $4}')
+    SSH_PORT=${SSH_PORT:-22}
+    info "Порт SSH: $SSH_PORT"
+
+    read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS < /dev/tty
+
+    if [[ -z "$ALLOW_IPS" ]]; then
+        warn "Белый список пуст. SSH будет заблокирован полностью после включения UFW."
+        read -rp "Всё равно включить UFW? [y/N]: " CONFIRM < /dev/tty
+        [[ ${CONFIRM,,} == y ]] || SKIP_UFW=1
+    fi
+
+    if [[ -z "${SKIP_UFW:-}" ]]; then
+        for ip in $ALLOW_IPS; do
+            if [[ $ip =~ ^[0-9./]+$ ]]; then
+                ufw allow from "$ip" to any port "$SSH_PORT" proto tcp comment "SSH from $ip"
+                ok "SSH разрешён с $ip"
+            else
+                warn "Пропущен некорректный адрес: $ip"
+            fi
+        done
+
+        read -rp "Открыть HTTP (80)? [y/N]: " OPEN_HTTP < /dev/tty
+        [[ ${OPEN_HTTP,,} == y ]] && ufw allow 80/tcp comment 'HTTP'
+
+        read -rp "Открыть HTTPS (443)? [y/N]: " OPEN_HTTPS < /dev/tty
+        [[ ${OPEN_HTTPS,,} == y ]] && ufw allow 443/tcp comment 'HTTPS'
+
+        ufw disable 2>/dev/null || true
+        ufw --force enable
+        ufw status verbose
+        ok "UFW включён"
+    fi
 fi
 
 # --- 7. Создание пользователя ---
