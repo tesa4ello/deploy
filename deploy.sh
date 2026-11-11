@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# deploy.sh — первоначальная настройка Debian
+set -euo pipefail
+
+# --- Цвета ---
+RED='\e[1;31m'; GREEN='\e[1;32m'; YELLOW='\e[1;33m'; CYAN='\e[1;36m'; DEF='\e[0m'
+info()  { echo -e "${CYAN}[INFO]${DEF} $*"; }
+ok()    { echo -e "${GREEN}[ OK ]${DEF} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${DEF} $*"; }
+err()   { echo -e "${RED}[ERR ]${DEF} $*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || err "Запускайте от root"
+
+# --- 1. Очистка старых bashrc ---
+info "Удаляю /root/.bashrc и /etc/skel/.bashrc"
+rm -f /root/.bashrc /etc/skel/.bashrc
+
+# --- 2. Установка кастомного /etc/bash.bashrc ---
+info "Разворачиваю /etc/bash.bashrc"
+cp /etc/bash.bashrc /etc/bash.bashrc.bak.$(date +%s) 2>/dev/null || true
+
+cat > /etc/bash.bashrc <<'BASHRC_EOF'
+# If not running interactively, don't do anything
+[ -z "$PS1" ] && return
+shopt -s checkwinsize
+if [ -z "${debian_chroot:-}" ] && [ -r /etc/debian_chroot ]; then
+debian_chroot=$(cat /etc/debian_chroot)
+fi
+case "$TERM" in
+xterm*|rxvt*)
+PROMPT_COMMAND='echo -ne "\033]0;[ ${USER}@${HOSTNAME}: ${PWD} ]\007"'
+;;
+*)
+;;
+esac
+if [ -x /usr/lib/command-not-found -o -x /usr/share/command-not-found/command-not-found ]; then
+function command_not_found_handle {
+if [ -x /usr/lib/command-not-found ]; then
+/usr/lib/command-not-found -- "$1"
+return $?
+elif [ -x /usr/share/command-not-found/command-not-found ]; then
+/usr/share/command-not-found/command-not-found -- "$1"
+return $?
+else
+printf "%s: command not found\n" "$1" >&2
+return 127
+fi
+}
+fi
+case $- in
+*i*) ;;
+*) return;;
+esac
+HISTCONTROL=ignoreboth
+shopt -s histappend
+HISTSIZE=1000
+HISTFILESIZE=2000
+if [ -x /usr/bin/dircolors ]; then
+test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+fi
+tput sgr0
+clear
+export EDITOR=nano
+export BLACK="\e[0;30m"         RED="\e[0;31m"          GREEN="\e[0;32m"
+export YELLOW="\e[0;33m"        BLUE="\e[0;34m"         MAGENTA="\e[0;35m"
+export CYAN="\e[0;36m"          GRAY="\e[0;37m"         DEF="\e[0;39m"
+export DGRAY="\e[1;30m"         LRED="\e[1;31m"         LGREEN="\e[1;32m"
+export LYELLOW="\e[1;33m"       LBLUE="\e[1;34m"        LMAGENTA="\e[1;35m"
+export LCYAN="\e[1;36m"         WHITE="\e[1;37m"
+if [ `whoami` = 'root' ]; then COLOR=$RED; else COLOR=$GREEN; fi
+export PS1="[ \[$COLOR\]\u\[$DEF\]@\[$LBLUE\]\h\[$DEF\]:\[$LYELLOW\]\w/\[$DEF\] ]\[$COLOR\]\\\$\[$DEF "
+export PS2=">" PS3="?) " PS4="[DEBUG]: "
+DOTSTRING=""
+for((i=1;i<$COLUMNS;i++)); do DOTSTRING="$DOTSTRING="; done
+header(){
+local LINECOLOR=$LBLUE TEXTCOLOR=$YELLOW chars=$DOTSTRING str=" ${@:1} "
+local half=$(( (${#chars} - ${#str})/2 )) rest=$(( ${#chars} - ${#str} - $half ))
+echo -e
+echo -e "$LINECOLOR${chars:0:$half}$TEXTCOLOR${str}$LINECOLOR${chars:0:$rest}$DEF"
+echo -e
+}
+echo -e ${LCYAN}
+figlet -ct "Welcome to `cat /etc/hostname`"
+fastfetch
+header "Место на разделах"
+df -h | awk 'FNR<2||/^(\/dev)/'
+ERRORS=$(dmesg | grep error | grep -v errors)
+if [ -n "$ERRORS" ]; then
+header "Последние ошибки"
+echo "$ERRORS"
+return 0
+fi
+alias ll='ls -lha --color=auto'
+header "Удачного дня!"
+BASHRC_EOF
+ok "bash.bashrc установлен"
+
+# --- 3. Обновление системы + чистка старых ядер ---
+info "Обновление пакетов"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get upgrade -y
+apt-get dist-upgrade -y
+apt-get autoremove --purge -y
+apt-get autoclean -y
+
+info "Удаление старых ядер (оставляю текущее: $(uname -r))"
+CURRENT_VER=$(uname -r | sed 's/-[^-]*$//')
+for pkg in $(dpkg -l 'linux-image-[0-9]*' 'linux-headers-[0-9]*' 2>/dev/null \
+            | awk '/^ii/ {print $2}' \
+            | grep -vE "$(uname -r|sed 's/\./\\./g')|${CURRENT_VER}"); do
+    apt-get purge -y "$pkg" || warn "не удалось удалить $pkg"
+done
+update-grub || true
+ok "Система обновлена"
+
+# --- 4. Базовые пакеты ---
+info "Установка базовых пакетов"
+apt-get install -y curl wget sudo ufw btop figlet
+ok "Пакеты установлены"
+
+# --- 5. fastfetch или neofetch ---
+info "Установка fastfetch"
+if apt-get install -y fastfetch; then
+    ok "fastfetch установлен"
+else
+    warn "fastfetch недоступен, ставлю neofetch"
+    apt-get install -y neofetch
+fi
+
+# --- 6. Настройка UFW ---
+info "Настройка UFW"
+read -rp "Порт SSH [22]: " SSH_PORT
+SSH_PORT=${SSH_PORT:-22}
+ufw allow "$SSH_PORT"/tcp comment 'SSH'
+
+read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS
+for ip in $ALLOW_IPS; do
+    if [[ $ip =~ ^[0-9./]+$ ]]; then
+        ufw allow from "$ip" comment "whitelist $ip"
+        ok "Добавлен whitelist: $ip"
+    else
+        warn "Пропущен некорректный адрес: $ip"
+    fi
+done
+
+read -rp "Открыть HTTP (80)? [y/N]: " OPEN_HTTP
+[[ ${OPEN_HTTP,,} == y ]] && ufw allow 80/tcp comment 'HTTP'
+
+read -rp "Открыть HTTPS (443)? [y/N]: " OPEN_HTTPS
+[[ ${OPEN_HTTPS,,} == y ]] && ufw allow 443/tcp comment 'HTTPS'
+
+if [[ -z "$ALLOW_IPS" && "$SSH_PORT" != "22" ]]; then
+    warn "Вы не указали IP для whitelist и сменили порт SSH."
+    warn "Убедитесь, что сможете подключиться после включения firewall."
+    read -rp "Продолжить и включить UFW? [y/N]: " CONFIRM
+    [[ ${CONFIRM,,} == y ]] || SKIP_UFW=1
+fi
+
+if [[ -z "${SKIP_UFW:-}" ]]; then
+    ufw --force enable
+    ufw status verbose
+    ok "UFW включён"
+fi
+
+# --- 7. Создание пользователя ---
+read -rp "Имя нового пользователя: " NEWUSER
+[[ -n "$NEWUSER" ]] || err "Имя не может быть пустым"
+id "$NEWUSER" &>/dev/null && err "Пользователь $NEWUSER уже существует"
+
+adduser --gecos "" "$NEWUSER"
+usermod -aG sudo "$NEWUSER"
+ok "Пользователь $NEWUSER создан и добавлен в sudo"
+
+# --- 8. Смена пароля root ---
+info "Смена пароля root"
+passwd root
+
+# --- 9. Перенос SSH-ключей ---
+if [[ -d /root/.ssh && -f /root/.ssh/authorized_keys ]]; then
+    info "Переношу SSH-ключи в ~$NEWUSER/.ssh"
+    mkdir -p "/home/$NEWUSER/.ssh"
+    cp /root/.ssh/authorized_keys "/home/$NEWUSER/.ssh/"
+    for k in /root/.ssh/id_*; do
+        [[ -e "$k" && "$k" != *.pub ]] && cp "$k" "/home/$NEWUSER/.ssh/"
+    done
+    chown -R "$NEWUSER:$NEWUSER" "/home/$NEWUSER/.ssh"
+    chmod 700 "/home/$NEWUSER/.ssh"
+    chmod 600 "/home/$NEWUSER/.ssh"/* 2>/dev/null || true
+    ok "Ключи перенесены"
+else
+    warn "Ключей у root не найдено — пропуск"
+fi
+
+# --- 10. Отключение входа по паролю SSH ---
+info "Отключаю вход по паролю SSH"
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-no-password.conf <<'SSH_EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+SSH_EOF
+chmod 644 /etc/ssh/sshd_config.d/99-no-password.conf
+
+grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config \
+    || echo -e "\nInclude /etc/ssh/sshd_config.d/*.conf" >> /etc/ssh/sshd_config
+
+systemctl restart sshd || systemctl restart ssh
+ok "SSH настроен: только ключи"
+
+# --- 11. Перезагрузка ---
+info "Готово. Перезагрузка через 5 секунд (Ctrl+C для отмены)..."
+sleep 5
+reboot
