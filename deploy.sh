@@ -158,23 +158,21 @@ header "Удачного дня!"
 BASHRC_EOF
 ok "bash.bashrc установлен"
 
-# --- 3. Обновление системы + чистка старых ядер ---
+# --- 3. Обновление системы + безопасная чистка ядер ---
 info "Обновление пакетов"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
 apt-get dist-upgrade -y
+
+# Используем только штатный autoremove (безопасно)
 apt-get autoremove --purge -y
 apt-get autoclean -y
 
-info "Удаление старых ядер (оставляю текущее: $(uname -r))"
-CURRENT_VER=$(uname -r | sed 's/-[^-]*$//')
-for pkg in $(dpkg -l 'linux-image-[0-9]*' 'linux-headers-[0-9]*' 2>/dev/null \
-            | awk '/^ii/ {print $2}' \
-            | grep -vE "$(uname -r|sed 's/\./\\./g')|${CURRENT_VER}"); do
-    apt-get purge -y "$pkg" || warn "не удалось удалить $pkg"
-done
-update-grub || true
+# Обновляем grub, если он установлен
+if command -v update-grub &>/dev/null; then
+    update-grub
+fi
 ok "Система обновлена"
 
 # --- 4. Базовые пакеты ---
@@ -194,7 +192,7 @@ fi
 # --- 6. Настройка UFW ---
 info "Настройка UFW"
 
-# Автопереключение на iptables-legacy (нужно для OpenVZ/LXC)
+# Автопереключение на iptables-legacy (нужно для OpenVZ/LXC/некоторых VPS)
 if command -v iptables-legacy &>/dev/null; then
     update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || true
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
@@ -202,14 +200,13 @@ fi
 
 # Проверяем, работает ли iptables
 if ! iptables -L -n &>/dev/null; then
-    warn "iptables не поддерживается хостовым ядром (OpenVZ/LXC)."
+    warn "iptables не поддерживается хостовым ядром или VPS."
     warn "UFW работать не будет — пропускаем."
     SKIP_UFW=1
 fi
 
 if [[ -z "${SKIP_UFW:-}" ]]; then
     # Порт SSH определяем автоматически из текущего подключения
-    # SSH_CONNECTION = "client_ip client_port server_ip server_port"
     SSH_PORT=$(echo "${SSH_CONNECTION:-}" | awk '{print $4}')
     SSH_PORT=${SSH_PORT:-22}
     info "Порт SSH: $SSH_PORT"
