@@ -140,9 +140,21 @@ fi
 
 # --- 6. Настройка UFW ---
 info "Настройка UFW"
-read -rp "Порт SSH [22]: " SSH_PORT < /dev/tty
-SSH_PORT=${SSH_PORT:-22}
-ufw allow "$SSH_PORT"/tcp comment 'SSH'
+
+# Функция безопасного чтения с валидацией
+read_port() {
+    local val
+    while true; do
+        read -rp "Порт SSH [22]: " val < /dev/tty
+        val="${val//[[:space:]]/}"  # убираем все пробелы/переводы строк
+        val="${val:-22}"
+        if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 65535 )); then
+            echo "$val"
+            return
+        fi
+        warn "Некорректный порт '$val'. Введите число от 1 до 65535."
+    done
+}
 
 read -rp "IP-адреса для полного доступа (через пробел, Enter — пропустить): " ALLOW_IPS < /dev/tty
 for ip in $ALLOW_IPS; do
