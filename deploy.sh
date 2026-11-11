@@ -169,10 +169,6 @@ apt-get dist-upgrade -y
 apt-get autoremove --purge -y
 apt-get autoclean -y
 
-# Обновляем grub, если он установлен
-if command -v update-grub &>/dev/null; then
-    update-grub
-fi
 ok "Система обновлена"
 
 # --- 4. Базовые пакеты ---
